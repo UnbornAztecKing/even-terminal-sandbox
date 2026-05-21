@@ -4,6 +4,7 @@
 BRIDGE_CONTAINER=${BRIDGE_CONTAINER:-even-bridge}
 PROXY_CONTAINER=${PROXY_CONTAINER:-even-egress-proxy}
 BRIDGE_PORT=${BRIDGE_PORT:-3456}
+# shellcheck disable=SC2034  # used by .bats files that source this helper
 BRIDGE_URL="http://127.0.0.1:${BRIDGE_PORT}"
 
 token() {

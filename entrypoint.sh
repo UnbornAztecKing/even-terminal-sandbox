@@ -27,13 +27,15 @@ read_secret() {
     if [ ! -s "$_path" ]; then
         err "secret file $_path is empty"
     fi
-    # `IFS= read -r` preserves a single line without trailing newline.
-    IFS= read -r _value < "$_path"
+    # Read first line. `read` returns nonzero when EOF arrives without a
+    # trailing newline, but still populates the variable, so we tolerate
+    # that exit status. tr drops any trailing CR for cross-platform files.
+    _value=$(IFS= read -r _line < "$_path" || true; printf '%s' "$_line" | tr -d '\r')
     if [ -z "$_value" ]; then
         err "secret file $_path has no content on its first line"
     fi
     eval "export $_name=\$_value"
-    unset _value
+    unset _value _line
 }
 
 read_secret /run/secrets/anthropic_api_key ANTHROPIC_API_KEY
@@ -41,8 +43,13 @@ read_secret /run/secrets/bridge_token BRIDGE_TOKEN
 
 # Optional secrets.
 if [ -r /run/secrets/openai_api_key ] && [ -s /run/secrets/openai_api_key ]; then
-    IFS= read -r OPENAI_API_KEY < /run/secrets/openai_api_key
-    export OPENAI_API_KEY
+    OPENAI_API_KEY=$(IFS= read -r _l < /run/secrets/openai_api_key || true; printf '%s' "$_l" | tr -d '\r')
+    unset _l
+    if [ -n "$OPENAI_API_KEY" ]; then
+        export OPENAI_API_KEY
+    else
+        unset OPENAI_API_KEY
+    fi
 fi
 
 # Refuse to start if HTTPS_PROXY isn't set - this image is designed to egress

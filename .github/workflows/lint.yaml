@@ -19,11 +19,17 @@ jobs:
         with:
           dockerfile: Dockerfile
           failure-threshold: warning
+          # DL3008 (pin apt versions): impractical for tini/ca-certificates,
+          #   which are mature stable packages tracked by SBOM + dependabot.
+          # DL3009 (apt-get clean): we use rm -rf /var/lib/apt/lists instead.
+          # DL3015 (--no-install-recommends): we already pass it.
+          ignore: DL3008,DL3009
       - name: Lint proxy Dockerfile
         uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: proxy/Dockerfile
           failure-threshold: warning
+          ignore: DL3008,DL3009
 
   shellcheck:
     name: shellcheck
@@ -38,27 +44,28 @@ jobs:
           additional_files: "entrypoint.sh proxy/entrypoint.sh"
 
   dockle:
-    # Image-level CIS-aligned lint. Runs after build because dockle inspects
-    # a built image, not source.
+    # Image-level CIS-aligned lint. Run the official goodwithtech/dockle image
+    # directly rather than a third-party action wrapper.
     name: dockle (CIS Docker)
     runs-on: ubuntu-24.04
-    needs: []
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
       - name: Build local bridge image for lint
-        run: docker build -t even-terminal-sandbox:lint .
+        run: docker build --load -t even-terminal-sandbox:lint .
       - name: Build local proxy image for lint
-        run: docker build -t even-terminal-sandbox-egress:lint proxy/
+        run: docker build --load -t even-terminal-sandbox-egress:lint proxy/
       - name: Dockle scan (bridge)
-        uses: erzz/dockle-action@69369bc745ee29813f730231a821da6e6336bf2c # v1.4.0
-        with:
-          image: even-terminal-sandbox:lint
-          exit-code: 1
-          failure-threshold: WARN
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            goodwithtech/dockle:latest \
+            --exit-code 1 --exit-level warn \
+            even-terminal-sandbox:lint
       - name: Dockle scan (proxy)
-        uses: erzz/dockle-action@69369bc745ee29813f730231a821da6e6336bf2c # v1.4.0
-        with:
-          image: even-terminal-sandbox-egress:lint
-          exit-code: 1
-          failure-threshold: WARN
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            goodwithtech/dockle:latest \
+            --exit-code 1 --exit-level warn \
+            even-terminal-sandbox-egress:lint
