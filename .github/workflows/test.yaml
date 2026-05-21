@@ -29,6 +29,13 @@ jobs:
           openssl rand -hex 32 > secrets/bridge_token
           printf '%s' "$ANTHROPIC_API_KEY" > secrets/anthropic_api_key
           chmod 600 secrets/*
+          # Compose bind-mounts secret files with host ownership preserved.
+          # The container runs as uid 10001 and the CI runner is uid 1001, so
+          # without chown the container cannot read mode-0600 files. Operators
+          # on real hosts don't hit this because scripts/secret-init.sh runs
+          # as the same uid the container reads as via Docker Desktop's host
+          # mapping.
+          sudo chown 10001:10001 secrets/*
           mkdir -p sample-project && touch sample-project/.keep
           {
             echo "PROJECT_DIR=$PWD/sample-project"
