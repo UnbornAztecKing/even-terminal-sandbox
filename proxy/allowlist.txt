@@ -1,0 +1,29 @@
+# Egress allowlist for the agent container.
+#
+# Each line is an extended regex matched against the CONNECT host (no port).
+# Lines starting with # and blank lines are ignored.
+#
+# Add new entries with care: every entry expands the data-exfiltration
+# surface available to a prompt-injection attacker. Pinning to specific
+# subdomains is preferable to wildcarding a vendor's root.
+
+# Anthropic API (Claude Agent SDK)
+^api\.anthropic\.com$
+
+# OpenAI API (Codex provider, if enabled)
+^api\.openai\.com$
+
+# npm registry — required by some agent flows that install dev dependencies
+^registry\.npmjs\.org$
+^registry\.npmmirror\.com$
+
+# GitHub — code reads/clones over HTTPS
+^github\.com$
+^api\.github\.com$
+^codeload\.github\.com$
+^raw\.githubusercontent\.com$
+^objects\.githubusercontent\.com$
+
+# pkg.go.dev / golang proxy — comment out unless your project actually uses Go
+# ^proxy\.golang\.org$
+# ^sum\.golang\.org$

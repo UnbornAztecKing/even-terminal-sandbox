@@ -1,0 +1,209 @@
+# even-terminal-sandbox compose stack.
+#
+# Two services on two networks:
+#   - app  (internal): bridge ↔ egress-proxy. No route to the host gateway.
+#   - egress (default): egress-proxy ↔ public internet.
+#
+# Operator interaction is via the published port 127.0.0.1:3456 only. Remote
+# access to the bridge is granted by Tailscale on the host (see scripts/qr.sh).
+#
+# Compose schema version omitted (Compose v2+ ignores `version`).
+
+x-common: &defaults
+  restart: unless-stopped
+  cap_drop: ["ALL"]
+  security_opt:
+    - "no-new-privileges:true"
+  read_only: true
+
+services:
+  bridge:
+    <<: *defaults
+    image: ghcr.io/unbornaztecking/even-terminal-sandbox:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        EVEN_TERMINAL_VERSION: ${EVEN_TERMINAL_VERSION:-0.7.9}
+        BASE_IMAGE: node:22-bookworm-slim
+        BASE_IMAGE_DIGEST: ${BASE_IMAGE_DIGEST:-}
+        SOURCE_COMMIT: ${SOURCE_COMMIT:-local}
+    container_name: even-bridge
+    hostname: bridge
+    user: "10001:10001"
+    init: true
+    pids_limit: 256
+    mem_limit: ${BRIDGE_MEM_LIMIT:-2g}
+    memswap_limit: ${BRIDGE_MEM_LIMIT:-2g}
+    cpus: ${BRIDGE_CPUS:-2.0}
+
+    # No published ports. The bridge sits on an internal-only network with
+    # no L3 route to the public internet; inbound from the host arrives via
+    # the `publisher` sidecar (below) which forwards 127.0.0.1:${BRIDGE_PORT}
+    # to bridge:3456.
+
+    environment:
+      # All public-internet egress must go through the sidecar proxy.
+      HTTP_PROXY: "http://egress-proxy:3128"
+      HTTPS_PROXY: "http://egress-proxy:3128"
+      NO_PROXY: "127.0.0.1,localhost,bridge,egress-proxy"
+      # Surface display name in the QR/banner.
+      EVEN_TERMINAL_NAME: ${EVEN_TERMINAL_NAME:-sandbox}
+
+    secrets:
+      - anthropic_api_key
+      - bridge_token
+      # Compose ignores undeclared optional secrets; declare openai_api_key
+      # only if your operator has set it.
+
+    volumes:
+      # Project tree the agent is allowed to read/write.
+      - type: bind
+        source: ${PROJECT_DIR:?set PROJECT_DIR to the project the agent may edit}
+        target: /work
+        bind:
+          create_host_path: false
+      # Per-stack agent state. NOT mounted from the host's real ~/.claude.
+      - even-claude-state:/home/even/.claude
+      - even-config-state:/home/even/.config
+      # Writable scratch for npm caches etc.
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 134217728
+          mode: 1777
+
+    networks:
+      - app
+
+    depends_on:
+      egress-proxy:
+        condition: service_healthy
+
+    healthcheck:
+      # Defined in the Dockerfile; surfaced here so compose waits for it.
+      test: ["CMD","node","-e","require('http').get('http://127.0.0.1:3456/api/info',r=>process.exit(r.statusCode===401?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  egress-proxy:
+    <<: *defaults
+    image: ghcr.io/unbornaztecking/even-terminal-sandbox-egress:${IMAGE_TAG:-local}
+    build:
+      context: ./proxy
+      dockerfile: Dockerfile
+      args:
+        SOURCE_COMMIT: ${SOURCE_COMMIT:-local}
+    container_name: even-egress-proxy
+    hostname: egress-proxy
+    user: "10001:10001"
+    init: true
+    pids_limit: 64
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: ${PROXY_CPUS:-1.0}
+
+    # Proxy listens on app-net only. egress-net gives it Internet access.
+    networks:
+      - app
+      - egress
+
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /run/tinyproxy:size=8m,mode=1777
+
+    healthcheck:
+      # Up = the proxy refuses a CONNECT to a deliberately blocked host.
+      # A non-2xx response means the proxy is up AND the allowlist is wired.
+      test: ["CMD-SHELL", "printf 'CONNECT deny.invalid:443 HTTP/1.0\\r\\nHost: deny.invalid\\r\\n\\r\\n' | nc -w 2 127.0.0.1 3128 | grep -qE '403|Forbidden|denied|Filtered'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  publisher:
+    # Single-purpose TCP forwarder. Sits on the internal `app` network with
+    # the bridge AND on the host-publish path so docker can NAT a host port
+    # into the container. The forwarder itself only knows how to relay TCP
+    # from :3456 to bridge:3456 - it has no shell, no agent code, and no
+    # access to project files.
+    image: alpine/socat:1.7.4.4
+    container_name: even-publisher
+    hostname: publisher
+    user: "65534:65534"   # nobody:nobody, baked into the alpine/socat image
+    init: true
+    restart: unless-stopped
+    cap_drop: ["ALL"]
+    cap_add:
+      - NET_BIND_SERVICE   # needed only if BRIDGE_PORT < 1024; harmless otherwise
+    security_opt:
+      - "no-new-privileges:true"
+    read_only: true
+    pids_limit: 32
+    mem_limit: 64m
+    memswap_limit: 64m
+    networks:
+      - app
+      - publish
+    ports:
+      - target: 3456
+        published: "${BRIDGE_PORT:-3456}"
+        host_ip: "127.0.0.1"
+        protocol: tcp
+        mode: host
+    command:
+      - "TCP-LISTEN:3456,fork,reuseaddr,bind=0.0.0.0"
+      - "TCP:bridge:3456"
+    depends_on:
+      bridge:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  # app: the bridge container's only network. internal:true means containers
+  # on this network have no route to the public internet - only sibling
+  # containers (the proxy and the publisher) are reachable.
+  app:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.79.42.0/29
+
+  # egress: gives the proxy a way out. Bridged to the host's default route.
+  egress:
+    driver: bridge
+
+  # publish: gives the publisher sidecar a non-internal network on which
+  # Docker can attach the host port forward. The bridge container is NOT on
+  # this network.
+  publish:
+    driver: bridge
+
+secrets:
+  anthropic_api_key:
+    file: ./secrets/anthropic_api_key
+  bridge_token:
+    file: ./secrets/bridge_token
+
+volumes:
+  even-claude-state:
+  even-config-state:

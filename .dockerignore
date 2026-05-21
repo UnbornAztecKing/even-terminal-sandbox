@@ -1,0 +1,17 @@
+.git
+.github
+.gitignore
+.dockerignore
+README.md
+DESIGN.md
+SECURITY.md
+VALIDATION.md
+LICENSE
+docs/
+tests/
+scripts/
+.env
+.env.*
+secrets/
+*.log
+node_modules/

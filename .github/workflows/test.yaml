@@ -1,0 +1,66 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: bats integration suite
+    runs-on: ubuntu-24.04
+    env:
+      ANTHROPIC_API_KEY: dummy-key-for-test-do-not-call-api
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install bats
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats jq
+
+      - name: Initialize secrets and env
+        run: |
+          mkdir -p secrets
+          umask 077
+          openssl rand -hex 32 > secrets/bridge_token
+          printf '%s' "$ANTHROPIC_API_KEY" > secrets/anthropic_api_key
+          chmod 600 secrets/*
+          mkdir -p sample-project && touch sample-project/.keep
+          {
+            echo "PROJECT_DIR=$PWD/sample-project"
+            echo "BRIDGE_PORT=3456"
+          } > .env
+
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - name: Build images
+        run: |
+          docker compose build
+
+      - name: Start stack
+        run: |
+          docker compose up -d
+          # Wait for bridge healthcheck
+          for _ in $(seq 1 60); do
+            state=$(docker inspect -f '{{.State.Health.Status}}' even-bridge 2>/dev/null || echo "missing")
+            if [ "$state" = "healthy" ]; then break; fi
+            sleep 2
+          done
+          docker compose ps
+          test "$state" = "healthy"
+
+      - name: Run bats suite
+        run: bats tests/
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          docker compose logs --tail=200 || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v --remove-orphans

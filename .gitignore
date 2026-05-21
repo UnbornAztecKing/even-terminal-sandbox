@@ -1,0 +1,13 @@
+.env
+.env.local
+secrets/*
+!secrets/.gitkeep
+sample-project/
+*.log
+.DS_Store
+node_modules/
+dist/
+.vscode/
+.idea/
+*.tgz
+coverage/

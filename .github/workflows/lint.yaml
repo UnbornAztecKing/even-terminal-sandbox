@@ -1,0 +1,64 @@
+name: lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  hadolint:
+    name: hadolint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Lint bridge Dockerfile
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+      - name: Lint proxy Dockerfile
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
+        with:
+          dockerfile: proxy/Dockerfile
+          failure-threshold: warning
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Run shellcheck
+        uses: ludeeus/action-shellcheck@00b27aa7cb85167568cb48a3838b75f4265f2bca # 2.0.0
+        with:
+          severity: warning
+          scandir: .
+          additional_files: "entrypoint.sh proxy/entrypoint.sh"
+
+  dockle:
+    # Image-level CIS-aligned lint. Runs after build because dockle inspects
+    # a built image, not source.
+    name: dockle (CIS Docker)
+    runs-on: ubuntu-24.04
+    needs: []
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+      - name: Build local bridge image for lint
+        run: docker build -t even-terminal-sandbox:lint .
+      - name: Build local proxy image for lint
+        run: docker build -t even-terminal-sandbox-egress:lint proxy/
+      - name: Dockle scan (bridge)
+        uses: erzz/dockle-action@69369bc745ee29813f730231a821da6e6336bf2c # v1.4.0
+        with:
+          image: even-terminal-sandbox:lint
+          exit-code: 1
+          failure-threshold: WARN
+      - name: Dockle scan (proxy)
+        uses: erzz/dockle-action@69369bc745ee29813f730231a821da6e6336bf2c # v1.4.0
+        with:
+          image: even-terminal-sandbox-egress:lint
+          exit-code: 1
+          failure-threshold: WARN
